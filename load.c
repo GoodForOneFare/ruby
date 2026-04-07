@@ -1096,6 +1096,13 @@ search_required(rb_vm_t *vm, VALUE fname, volatile VALUE *path, feature_func rb_
                 if (loading) *path = rb_filesystem_str_new_cstr(loading);
                 return 'r';
             }
+            /* Fast path: for absolute .rb paths (from bootsnap), skip
+             * rb_find_file stat check and second feature check.
+             * The first rb_feature_p already checked this path. */
+            if (rb_is_absolute_path(ftptr)) {
+                *path = fname;
+                return 'r';
+            }
             if ((tmp = rb_find_file(fname)) != 0) {
                 ext = strrchr(ftptr = RSTRING_PTR(tmp), '.');
                 if (!rb_feature_p(vm, ftptr, ext, TRUE, TRUE, &loading) || loading)
