@@ -3529,6 +3529,77 @@ dir_s_each_child(int argc, VALUE *argv, VALUE io)
     return Qnil;
 }
 
+static VALUE
+dir_scan_body(VALUE dir)
+{
+    struct dir_data *dirp;
+    struct dirent *dp;
+    ID id_file = rb_intern("file");
+    ID id_directory = rb_intern("directory");
+    ID id_link = rb_intern("link");
+    ID id_unknown = rb_intern("unknown");
+    VALUE sym_file = ID2SYM(id_file);
+    VALUE sym_directory = ID2SYM(id_directory);
+    VALUE sym_link = ID2SYM(id_link);
+    VALUE sym_unknown = ID2SYM(id_unknown);
+    IF_NORMALIZE_UTF8PATH(int norm_p);
+
+    GetDIR(dir, dirp);
+    rewinddir(dirp->dir);
+    IF_NORMALIZE_UTF8PATH(norm_p = need_normalization(dirp->dir, RSTRING_PTR(dirp->path)));
+    while ((dp = READDIR(dirp->dir, dirp->enc)) != NULL) {
+        const char *name = dp->d_name;
+        size_t namlen = NAMLEN(dp);
+        VALUE path, ftype;
+
+        if (name[0] == '.') {
+            if (namlen == 1) continue;
+            if (namlen == 2 && name[1] == '.') continue;
+        }
+
+#if !EMULATE_IFTODT
+        switch (dp->d_type) {
+          case DT_REG: ftype = sym_file; break;
+          case DT_DIR: ftype = sym_directory; break;
+          case DT_LNK: ftype = sym_link; break;
+          default:     ftype = sym_unknown; break;
+        }
+#else
+        ftype = sym_unknown;
+#endif
+
+#if NORMALIZE_UTF8PATH
+        if (norm_p && has_nonascii(name, namlen) &&
+            !NIL_P(path = rb_str_normalize_ospath(name, namlen))) {
+            path = rb_external_str_with_enc(path, dirp->enc);
+        }
+        else
+#endif
+        path = rb_external_str_new_with_enc(name, namlen, dirp->enc);
+        rb_yield_values(2, path, ftype);
+    }
+    return Qnil;
+}
+
+/*
+ * call-seq:
+ *   Dir.scan(dirpath) {|entry_name, ftype| ... } -> nil
+ *
+ * Like Dir.each_child, but yields both the entry name and its file type
+ * as a symbol (:file, :directory, :link, or :unknown).
+ * The file type comes from the dirent d_type field, avoiding extra stat() calls.
+ */
+static VALUE
+dir_s_scan(int argc, VALUE *argv, VALUE io)
+{
+    VALUE dir;
+
+    RETURN_ENUMERATOR(io, argc, argv);
+    dir = dir_open_dir(argc, argv);
+    rb_ensure(dir_scan_body, dir, dir_close, dir);
+    return Qnil;
+}
+
 /*
  * call-seq:
  *   each_child {|entry_name| ... } -> self
@@ -3816,6 +3887,7 @@ Init_Dir(void)
     rb_define_singleton_method(rb_cDir, "foreach", dir_foreach, -1);
     rb_define_singleton_method(rb_cDir, "entries", dir_entries, -1);
     rb_define_singleton_method(rb_cDir, "each_child", dir_s_each_child, -1);
+    rb_define_singleton_method(rb_cDir, "scan", dir_s_scan, -1);
     rb_define_singleton_method(rb_cDir, "children", dir_s_children, -1);
 
     rb_define_method(rb_cDir,"fileno", dir_fileno, 0);
