@@ -1232,6 +1232,10 @@ static void
 method_added(VALUE klass, ID mid)
 {
     if (ruby_running) {
+        if (!RCLASS_SINGLETON_P(klass) &&
+            rb_method_basic_definition_p(klass, idMethod_added)) {
+            return;
+        }
         CALL_METHOD_HOOK(klass, added, mid);
     }
 }
