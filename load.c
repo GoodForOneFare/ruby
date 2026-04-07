@@ -1080,8 +1080,67 @@ rb_f_require_relative(VALUE obj, VALUE fname)
 
 typedef int (*feature_func)(rb_vm_t *vm, const char *feature, const char *ext, int rb, int expanded, const char **fn);
 
+/* Negative require cache: remember paths that failed to resolve.
+ * Each miss triggers a $LOAD_PATH walk (~919 entries × 3 extensions = ~2757
+ * stat-like ops). Caching failures avoids ~200ms of wasted path expansion
+ * for ~30 commonly-probed-but-absent gems.
+ *
+ * Not automatically cleared on $LOAD_PATH mutation — callers that
+ * modify $LOAD_PATH mid-process (e.g. Gem.refresh, Bundler.setup)
+ * should call rb_clear_negative_require_cache() to avoid stale hits.
+ * During normal boot, $LOAD_PATH is stable and this is not an issue. */
+static st_table *negative_require_cache = NULL;
+
+static int
+negative_cache_free_key_i(st_data_t key, st_data_t val, st_data_t arg)
+{
+    xfree((char *)key);
+    return ST_CONTINUE;
+}
+
+void
+rb_clear_negative_require_cache(void)
+{
+    if (negative_require_cache) {
+        st_foreach(negative_require_cache, negative_cache_free_key_i, 0);
+        st_free_table(negative_require_cache);
+        negative_require_cache = NULL;
+    }
+}
+
+static int
+search_required_inner(rb_vm_t *vm, VALUE fname, volatile VALUE *path, feature_func rb_feature_p);
+
 static int
 search_required(rb_vm_t *vm, VALUE fname, volatile VALUE *path, feature_func rb_feature_p)
+{
+    /* Check negative cache first */
+    if (negative_require_cache) {
+        const char *f = RSTRING_PTR(fname);
+        if (st_lookup(negative_require_cache, (st_data_t)f, NULL)) {
+            return 0;
+        }
+    }
+
+    int result = search_required_inner(vm, fname, path, rb_feature_p);
+
+    /* On miss, remember it. Only cache non-absolute, non-relative paths
+     * (bare gem names like "delayed_job", not "/path/to/file.rb"). */
+    if (result == 0) {
+        const char *f = RSTRING_PTR(fname);
+        if (f[0] != '/' && f[0] != '.') {
+            if (!negative_require_cache) {
+                negative_require_cache = st_init_strtable();
+            }
+            st_insert(negative_require_cache, (st_data_t)ruby_strdup(f), (st_data_t)1);
+        }
+    }
+
+    return result;
+}
+
+static int
+search_required_inner(rb_vm_t *vm, VALUE fname, volatile VALUE *path, feature_func rb_feature_p)
 {
     VALUE tmp;
     char *ext, *ftptr;
