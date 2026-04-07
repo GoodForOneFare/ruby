@@ -1121,12 +1121,30 @@ rb_iseq_new_with_callback(
 const rb_iseq_t *
 rb_iseq_load_iseq(VALUE fname)
 {
-    VALUE iseqv = rb_check_funcall(rb_cISeq, rb_intern("load_iseq"), 1, &fname);
+    static ID id_load_iseq = 0;
+    static int load_iseq_defined = -1; /* -1 = unknown, 0 = no, 1 = yes */
 
-    if (!SPECIAL_CONST_P(iseqv) && RBASIC_CLASS(iseqv) == rb_cISeq) {
-        return  iseqw_check(iseqv);
+    if (UNLIKELY(!id_load_iseq)) id_load_iseq = rb_intern("load_iseq");
+
+    /* Fast path: skip respond_to? check via rb_funcallv once we know
+     * load_iseq is defined (e.g. by bootsnap). */
+    if (LIKELY(load_iseq_defined == 1)) {
+        VALUE iseqv = rb_funcallv(rb_cISeq, id_load_iseq, 1, &fname);
+        if (!SPECIAL_CONST_P(iseqv) && RBASIC_CLASS(iseqv) == rb_cISeq) {
+            return iseqw_check(iseqv);
+        }
+        return NULL;
     }
 
+    /* Slow path: check if load_iseq responds */
+    VALUE iseqv = rb_check_funcall(rb_cISeq, id_load_iseq, 1, &fname);
+    if (!SPECIAL_CONST_P(iseqv) && RBASIC_CLASS(iseqv) == rb_cISeq) {
+        load_iseq_defined = 1;
+        return iseqw_check(iseqv);
+    }
+    if (UNDEF_P(iseqv)) {
+        load_iseq_defined = 0;
+    }
     return NULL;
 }
 
