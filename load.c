@@ -945,9 +945,25 @@ load_lock(rb_vm_t *vm, const char *ftptr, bool warn)
     if (!st_lookup(loading_tbl, (st_data_t)ftptr, &data)) {
         /* partial state */
         ftptr = ruby_strdup(ftptr);
-        data = (st_data_t)rb_thread_shield_new();
+        if (rb_thread_alone()) {
+            /* Single-threaded: skip thread_shield allocation, use Qtrue as sentinel */
+            data = (st_data_t)Qtrue;
+        }
+        else {
+            data = (st_data_t)rb_thread_shield_new();
+        }
         st_insert(loading_tbl, (st_data_t)ftptr, data);
         return (char *)ftptr;
+    }
+
+    if ((VALUE)data == Qtrue) {
+        /* Single-threaded sentinel: circular require */
+        if (warn) {
+            VALUE warning = rb_warning_string("loading in progress, circular require considered harmful - %s", ftptr);
+            rb_backtrace_each(rb_str_append, warning);
+            rb_warning("%"PRIsVALUE, warning);
+        }
+        return 0;
     }
 
     if (warn && rb_thread_shield_owned((VALUE)data)) {
@@ -968,6 +984,11 @@ release_thread_shield(st_data_t *key, st_data_t *value, st_data_t done, int exis
 {
     VALUE thread_shield = (VALUE)*value;
     if (!existing) return ST_STOP;
+    if (thread_shield == Qtrue) {
+        /* Single-threaded sentinel: just delete */
+        xfree((char *)*key);
+        return ST_DELETE;
+    }
     if (done) {
         rb_thread_shield_destroy(thread_shield);
         /* Delete the entry even if there are waiting threads, because they
