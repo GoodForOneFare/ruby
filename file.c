@@ -3511,6 +3511,15 @@ skiproot(const char *path, const char *end, rb_encoding *enc)
 char *
 rb_enc_path_next(const char *s, const char *e, rb_encoding *enc)
 {
+    if (rb_enc_asciicompat(enc)) {
+        /* Fast path: advance byte-by-byte while ASCII, fall back to
+         * Inc() for multi-byte sequences (byte >= 0x80). */
+        while (s < e && !isdirsep(*s)) {
+            if (LIKELY((unsigned char)*s < 0x80)) s++;
+            else Inc(s, e, enc);
+        }
+        return (char *)s;
+    }
     while (s < e && !isdirsep(*s)) {
         Inc(s, e, enc);
     }
@@ -3560,6 +3569,7 @@ char *
 rb_enc_path_last_separator(const char *path, const char *end, rb_encoding *enc)
 {
     char *last = NULL;
+    int asciicompat = rb_enc_asciicompat(enc);
     while (path < end) {
         if (isdirsep(*path)) {
             const char *tmp = path++;
@@ -3568,7 +3578,7 @@ rb_enc_path_last_separator(const char *path, const char *end, rb_encoding *enc)
             last = (char *)tmp;
         }
         else {
-            Inc(path, end, enc);
+            if (LIKELY(asciicompat && (unsigned char)*path < 0x80)) path++; else Inc(path, end, enc);
         }
     }
     return last;
@@ -3577,6 +3587,7 @@ rb_enc_path_last_separator(const char *path, const char *end, rb_encoding *enc)
 static char *
 chompdirsep(const char *path, const char *end, rb_encoding *enc)
 {
+    int asciicompat = rb_enc_asciicompat(enc);
     while (path < end) {
         if (isdirsep(*path)) {
             const char *last = path++;
@@ -3584,7 +3595,7 @@ chompdirsep(const char *path, const char *end, rb_encoding *enc)
             if (path >= end) return (char *)last;
         }
         else {
-            Inc(path, end, enc);
+            if (LIKELY(asciicompat && (unsigned char)*path < 0x80)) path++; else Inc(path, end, enc);
         }
     }
     return (char *)path;
@@ -3964,6 +3975,7 @@ rb_file_expand_path_internal(VALUE fname, VALUE dname, int abs_mode, int long_na
     BUFCHECK(bdiff + 1 >= buflen);
     p[1] = 0;
     root = skipprefix(buf, p+1, enc);
+    int asciicompat = rb_enc_asciicompat(enc);
 
     b = s;
     while (*s) {
@@ -4030,7 +4042,7 @@ rb_file_expand_path_internal(VALUE fname, VALUE dname, int abs_mode, int long_na
             break;
           default:
 #ifdef __APPLE__
-            {
+            if (UNLIKELY(!asciicompat || (unsigned char)*s >= 0x80)) {
                 int n = ignored_char_p(s, fend, enc);
                 if (n) {
                     if (s > b) {
@@ -4042,7 +4054,7 @@ rb_file_expand_path_internal(VALUE fname, VALUE dname, int abs_mode, int long_na
                 }
             }
 #endif /* __APPLE__ */
-            Inc(s, fend, enc);
+            if (LIKELY(asciicompat && (unsigned char)*s < 0x80)) s++; else Inc(s, fend, enc);
             break;
         }
     }
